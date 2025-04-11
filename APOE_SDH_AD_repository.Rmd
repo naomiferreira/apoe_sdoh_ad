@@ -1,0 +1,1035 @@
+---
+title: "APOE, Social Determinants of Health, and Alzheimer´s Disease"
+output: html_document
+date: "2024-10-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Save the image
+```{r}
+save.image("Bio_SDH_atual_03_03_25.RData")
+```
+
+# Loading packages
+```{r}
+library(haven)
+library(dplyr)
+library(compareGroups)
+library(stringr)
+library(survey)
+library(stringi)
+library(rlang)
+library(purrr)
+library(mice)
+library(VIM)
+library(stats)
+library(lavaan)
+library(Hmisc)
+library(ordinal)
+library(sjPlot)
+library(aod)
+library(nnet)
+library(ggplot2)
+library(ggpubr)
+library(plyr)
+```
+
+# Loading dataset
+```{r}
+BiobancoParaEstudosE_Naomi_DATA_2024_10_18_1413 <- read_csv("BiobancoParaEstudosE-Naomi_DATA_2024-10-18_1413.csv")
+Bio_SDH <- BiobancoParaEstudosE_Naomi_DATA_2024_10_18_1413
+
+# Only APOE
+So_apoe_BiobancoParaEstudosE_Apoe_DATA_2025_03_02_1945 <- read_csv("Documents/Produção/Biobanco/SDH, AD, and APOE/Documentos R/So_apoe_BiobancoParaEstudosE-Apoe_DATA_2025-03-02_1945.csv")
+
+Bio_SDH <- merge(Bio_SDH, So_apoe_BiobancoParaEstudosE_Apoe_DATA_2025_03_02_1945,
+                 by = "record_id", all.x = TRUE)
+
+```
+
+# Creating new variables
+# Covariables
+```{r}
+# physical_activity_yn - 0: Sedentário(a); 1: Atividade Doméstica ou Trabalho ou
+# Caminhada ou Outra; NA: Não informado ou Questão não consta na entrevista do ano
+Bio_SDH <- Bio_SDH %>% mutate(physical_activity_yn = 
+                              ifelse(physical_activity___1 > 0, 1,
+                              ifelse(physical_activity___2 > 0, 1,
+                              ifelse(physical_activity___3 > 0, 1,
+                              ifelse(physical_activity___4 > 0, 1, 
+                              ifelse(physical_activity___0 > 0, 0, NA))))))
+
+View(Bio_SDH[, c("physical_activity_yn", "physical_activity___0", 
+                 "physical_activity___1", "physical_activity___2", 
+                 "physical_activity___3", "physical_activity___4",
+                 "physical_activity___99", "physical_activity___999")])
+
+# Transforming  88, 99 e 999 in missing data 
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(hypertension_yn = ifelse(hypertension_yn == 99, NA, hypertension_yn)) 
+table(Bio_SDH$hypertension_yn)
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(diabetes_yn = ifelse(diabetes_yn == 99, NA, diabetes_yn)) 
+table(Bio_SDH$diabetes_yn)
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(cad_yn = ifelse(cad_yn == 99, NA, cad_yn)) 
+table(Bio_SDH$cad_yn)
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(cardiac_failure_yn = ifelse(cardiac_failure_yn == 99 | 
+                         cardiac_failure_yn == 999, NA, cardiac_failure_yn)) 
+table(Bio_SDH$cardiac_failure_yn)
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(dyslipidemia_yn = ifelse(dyslipidemia_yn == 99 | 
+                                  dyslipidemia_yn == 999, NA, 
+                                  dyslipidemia_yn)) 
+table(Bio_SDH$dyslipidemia_yn)
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(stroke_yn = ifelse(stroke_yn == 99, NA, stroke_yn)) 
+table(Bio_SDH$stroke_yn)
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(smoking_yn = ifelse(smoking_yn == 99 | 
+                         smoking_yn == 999, NA, smoking_yn)) 
+table(Bio_SDH$smoking_yn)
+
+Bio_SDH <- Bio_SDH %>%
+  mutate(alcohol_yn = ifelse(alcohol_yn == 99 | 
+                             alcohol_yn == 999 |
+                             alcohol_yn == 88, NA, alcohol_yn)) 
+table(Bio_SDH$alcohol_yn)
+
+```
+
+# APOE 
+```{r}
+# 1: gen. 22; 2: gen. 23; 3: gen. 24; 4: gen. 32; 
+# 5: gen. 33; 6: gen. 34; 7: gen. 44.
+# apoe_new - apoe_g ou apoe_i
+Bio_SDH <- Bio_SDH %>% mutate(apoe_new = ifelse(!is.na(apoe_g), apoe_g,
+                                         ifelse(!is.na(apoe_i), apoe_i, NA)))
+View(Bio_SDH[, c("apoe_new", "apoe_g", "apoe_i")])
+
+Bio_SDH <- Bio_SDH %>% mutate(apoe4_yn = ifelse(apoe_new == 3 |
+                                                apoe_new >= 6, 1,
+                                         ifelse(apoe_new < 3 |
+                                                apoe_new == 4 |
+                                                apoe_new == 5, 0, NA)))
+View(Bio_SDH[, c("apoe_new", "apoe4_yn")])
+
+```
+
+# Social determinants of health
+```{r}
+# Renda/classe social - Os participantes têm dados ou para CCEB ou para ABIPEME
+# CCEB: 0 A1 (42-46 pontos); 1 A2 (35-41 pontos); 2 B1 (29-34 pontos); 
+# 3 B2 (23-28 pontos); 4 C1 (18-22 pontos); 5 C2 (14-17 pontos);
+# 6 D (8-13 pontos); 7 E (0-7 pontos); 
+# ABIPEME: 5 CLASSE A: 35 ou mais; 4 CLASSE B: 21 a 34; 3 CLASSE C: 10 a 20;
+# 2 CLASSE D: 05 a 09; 1 CLASSE E: 0 a 4
+
+Bio_SDH <- Bio_SDH %>% mutate(cceb_new = ifelse(cceb_classif_categ <= 1, 5,
+                                         ifelse(cceb_classif_categ == 2 |
+                                                cceb_classif_categ == 3, 4,
+                                         ifelse(cceb_classif_categ == 4 |
+                                                cceb_classif_categ == 5, 3,
+                                         ifelse(cceb_classif_categ == 6, 2,
+                                         ifelse(cceb_classif_categ == 7, 1, 
+                                                NA))))))
+View(Bio_SDH[, c("cceb_new", "cceb_classif_categ")])
+
+Bio_SDH <- Bio_SDH %>% mutate(soc_class = ifelse(!is.na(abipeme_classification),
+                                                 abipeme_classification, 
+                                          ifelse(!is.na(cceb_new), cceb_new, 
+                                                 NA)))
+View(Bio_SDH[, c("soc_class", "cceb_new", "abipeme_classification")])
+
+# Working status
+# 0 Ainda trabalhava; 1 Aposentado; 2 Aposentado por invalidez; 3 Pensionista;
+# 4 Outro; 999 Questão não consta na entrevista do ano
+Bio_SDH <- Bio_SDH %>% mutate(worked_yn = 
+                              ifelse(occupation_situation == 0, 1, 
+                              ifelse(occupation_situation > 0 &
+                                     occupation_situation <= 4, 0, NA)))
+View(Bio_SDH[, c("worked_yn", "occupation_situation")])
+
+# Health assistance
+# health_assistence___1 = 1: SUS; health_assistence___2 = 1: Convênio;
+# health_assistence___3 = 1: Particular; health_assistence___999 = 1: 
+# Questão não consta na entrevista do ano
+Bio_SDH <- Bio_SDH %>% mutate(health_three = 
+                              ifelse(health_assistence___3 == 1 &
+                                     health_assistence___2 == 0 &
+                                     health_assistence___1 == 0, 2,
+                              ifelse(health_assistence___2 > 0, 1,
+                              ifelse(health_assistence___3 > 0, 1,
+                              ifelse(health_assistence___1 > 0, 0, 
+                              ifelse(!is.na(health_assistence___999), 0, 
+                                     NA))))))
+
+View(Bio_SDH[, c("health_three", "health_assistence___1", 
+                 "health_assistence___2", "health_assistence___3", 
+                 "health_assistence___999")])
+
+# Race
+# Race - Binary excluding asian participants
+# 1 Branca; 2 Negra; 3 Parda; 4 Amarela; 99 Não informado
+Bio_SDH <- Bio_SDH %>% mutate(race_black = 
+                                ifelse(race == 1, 1, 
+                                ifelse(race == 2, 2,
+                                ifelse(race == 3, 2, NA))))
+View(Bio_SDH[, c("race_black", "race")])
+
+# Marital status
+# 1 Solteiro(a); 2 Casado(a); 3 Amasiado(a); 4 Divorciado(a); 5 Viúvo(a);
+# 99 Não informado; 999 Questão não consta na entrevista do ano
+Bio_SDH <- Bio_SDH %>% mutate(married_yn = ifelse(marital_status == 2 |
+                                                  marital_status == 3, 1,
+                                           ifelse(marital_status == 1 |
+                                                  marital_status == 4 |
+                                                  marital_status == 5, 0, 
+                                                  NA)))
+View(Bio_SDH[, c("married_yn", "marital_status")])
+
+# Education (years of education)
+Bio_SDH <- Bio_SDH %>% mutate(education_num = 
+                                ifelse(education_deceased == "Analfabeta" |
+                                       education_deceased == "Analfabeto", 0,
+                                ifelse(education_deceased == "< 4", 3,
+                                ifelse(education_deceased == "04", 4,
+                                ifelse(education_deceased == "+16", 17,
+                                       education_deceased)))))
+Bio_SDH$education_num <- as.numeric(Bio_SDH$education_num)                              
+View(Bio_SDH[, c("education_num", "education_deceased")])
+
+```
+
+# Alzheimer's Disease
+```{r}
+# ad_cerad: 0 None; 1 Sparse; 2 Moderate; 3 Frequent; 88 Pending; 99 NA.
+# 0 Stage 0; 1 Stage 1; 2 Stage 2; 3 Stage 3; 4 Stage 4; 5 Stage 5; 6 Stage 6;
+# 7 Other; 99 NA
+
+Bio_SDH <- Bio_SDH %>% mutate(ad_cerad_com = 
+                              ifelse(ad_cerad > 3, NA, ad_cerad))
+View(Bio_SDH[, c("ad_cerad", "ad_cerad_com")])
+
+Bio_SDH <- Bio_SDH %>% mutate(ad_braak_com = 
+                              ifelse(ad_braak > 6, NA, ad_braak))
+View(Bio_SDH[, c("ad_braak", "ad_braak_com")])
+
+# Normal cognition = 0; asymptomatic AD = 1; symptomatic AD = 2; other dem = 3.
+Bio_SDH <- Bio_SDH %>% mutate(alzheimer_yn_as = 
+                                ifelse(ad_cerad_com >= 2 & ad_braak_com >= 3 &
+                                       escore_cdr_final >= 0.5, 2,
+                                ifelse(ad_cerad_com >= 2 & ad_braak_com >= 3 &
+                                       escore_cdr_final < 0.5, 1,
+                                ifelse((ad_cerad_com < 2 | ad_braak_com < 3) &
+                                      escore_cdr_final < 0.5, 0,
+                                 ifelse((ad_cerad_com < 2 | ad_braak_com < 3) &
+                                     escore_cdr_final >= 0.5, 3, NA)))))
+View(Bio_SDH[, c("alzheimer_yn_as", "ad_cerad_com", 
+                 "ad_braak_com", "escore_cdr_final")])
+
+# AD pathology y/n
+Bio_SDH <- Bio_SDH %>% mutate(alzheimer_yn_bin =
+                                ifelse(alzheimer_yn_as == 0, 0,
+                                ifelse(alzheimer_yn_as == 1, 1,
+                                ifelse(alzheimer_yn_as == 2, 1, NA))))
+View(Bio_SDH[, c("alzheimer_yn_bin", "alzheimer_yn_as")])
+
+```
+
+# Data cleaning (step 1)
+```{r}
+# Exclusion criteria
+# 0 Diário, 2 Semanal, 3 Quinzenal, 4 Mensal, 5 Anualmente, 99 Não informado, 
+# 999 Questão não consta na entrevista do ano
+Bio_SDH_1 <- subset(Bio_SDH, frequency_interaction <= 2)
+# Excluded = 219
+```
+
+# Data cleaning (step 2)
+# Excluding missing for covariates
+```{r}
+
+Bio_SDH_2 <- Bio_SDH_1[complete.cases(Bio_SDH_1[, c("age", 
+                                                "deceased_sex", "bmi", 
+                                                "hypertension_yn", 
+                                                "diabetes_yn", "cad_yn",
+                                                "cardiac_failure_yn", 
+                                                "dyslipidemia_yn", "stroke_yn", 
+                                                "smoking_yn", "alcohol_yn", 
+                                                "physical_activity_yn")]),]
+# Excluded = 62
+
+```
+
+# Excluding missing for APOE variables
+```{r}
+
+Bio_SDH_3 <- Bio_SDH_2[complete.cases(Bio_SDH_2[, c("apoe4_yn")]),]
+
+# Excluded = 526
+
+```
+
+## Excluding missing for social determinants of health
+```{r}
+
+Bio_SDH_4 <- Bio_SDH_3[complete.cases(Bio_SDH_3[, c(
+                                      "race_black", 
+                                      "married_yn", "education_num", 
+                                      "occupation", "living_alone_yn", 
+                                      "soc_class", "worked_yn",
+                                      "health_three")]),] 
+
+# Excluded = 91
+
+```
+
+# Excluding non AD dementia and missing for dementia and CDR-SB
+```{r}
+
+Bio_SDH_5 <- Bio_SDH_4[complete.cases(Bio_SDH_4[, c("alzheimer_yn_as", 
+                                                    "cdr_sb")]),]
+# Excluded = 0
+
+# Keeping only AD dementia
+Bio_SDH_6 <- subset(Bio_SDH_5, alzheimer_yn_as <= 2) 
+# Excluded = 203
+
+```
+
+# Occupation classification
+```{r}
+# Limpeza variável occupation
+clean_occupation <- function(occupation) {
+  occupation <- tolower(occupation)
+  occupation <- gsub("[[:space:]]+$", "", occupation)
+  occupation <- gsub("[[:punct:]]+$", "", occupation)
+  occupation <- stri_trans_general(occupation, "Latin-ASCII")
+  return(occupation)
+}
+
+# Função mutate
+Bio_SDH_6 <- Bio_SDH_6 %>%
+  mutate(occupation = clean_occupation(occupation)) 
+
+# Return possible answers
+table(Bio_SDH_6$occupation)
+
+# Mapeamento occupation
+occupation_map <- c(
+  "acougueiro" = "2", "adm. e empresa" = "4", "administrador" = "4", 
+  "administrador e comerciante" = "4", "administrador empresa" = "4", 
+  "administrador fazenda" = "3", "advocacia" = "4", "advogada" = "4",
+  "advogado" = "4", "advogado/corretor de imoveis" = "4", 
+  "agente administrativo" = "2", "agente escolar" = "2", 
+  "agente penitenciario" = "2", "agricultor" = "1", 
+  "agricultor, pedreiro" = "1", "agricultora" = "1", 
+  "agricultora familiar" = "1", "agricultura" = "1", "ajudante" = "1", 
+  "ajudante de caminhao" = "2", "ajudante de maquinas" = "2", 
+  "ajudante de pedreiro" = "1",
+  "ajudante geral" = "1", "ajudante geral - fabrica de calcados" = "1", 
+  "ajudante geral (supermercado" = "1", "ajudante geral de firma" = "1", 
+  "ajudante geral, domestica" = "1", "alfaiate" = "2", "almoxarifado" = "3", 
+  "almoxerifado" = "3", "ambulante" = "2", "analista de sistemas" = "4", 
+  "analista tributaria" = "3", "aposentado" = NA, "arquiteto" = "4",
+  "arrumadeira" = "1", "arrumador de hotel" = "1", "artesao" = "2", 
+  "ascensorista" = "1", "assistente administrativa" = "2", 
+  "assistente administrativo" = "2", "atendente" = "1", 
+  "atendente confeccao infantil" = "1", "atendente de enfermagem" = "2", 
+  "aula particular de reforco" = "2", "autonoma" = "2", 
+  "autonoma (fazia salgados" = "2", "autonomo" = "2",
+  "autonomo - entregas" = "2", "autonomo - motorista de caminhao" = "2", 
+  "autonomo (banca de jornal" = "2", "autonomo artesanato" = "2", 
+  "autonomo feira" = "3", "autonomo, padeiro" = "2", 
+  "autonomo, recuperacao de veiculos" = "2", "autonomo, vendedor" = "2", 
+  "aux de enfermagem" = "2", "aux. administrativa" = "2", 
+  "aux. enfermagem" = "2", "aux. limpeza" = "1", "auxiliar  judiciario" = "2", 
+  "auxiliar administativo" = "2", "auxiliar administrativa" = "2", 
+  "auxiliar administrativo" = "2", "auxiliar administrativo de hospital" = "2", 
+  "auxiliar administrativo, balconista, artesa autonoma" = "2", 
+  "auxiliar administrativo, motorista" = "2", 
+  "auxiliar de copa - hospital samaritano" = "1", "auxiliar de creche" = "2", 
+  "auxiliar de enfermagem" = "2", "auxiliar de entrega" = "2", 
+  "auxiliar de escrita fiscal" = "2", "auxiliar de escritorio" = "2", 
+  "auxiliar de fabrica" = "1", "auxiliar de laboratorio" = "2", 
+  "auxiliar de limpeza" = "1", "auxiliar de producao" = "1", 
+  "auxiliar de servicos" = "1", "auxiliar de servicos gerais/ pedreiro" = "1",
+  "auxiliar enfermagem" = "2", "auxiliar limpeza" = "1", "aviador" = "4", 
+  "baba" = "1", "baba de crianca" = "1", "balconista" = "2", 
+  "balconista de farmacia" = "2", "bancaria" = "4", "bancario" = "4", 
+  "barbeiro" = "2", 
+  "bibliotecaria, diretora da biblioteca mario de andrade, diretora de cultura do centro cultural vergueiro" = "4", 
+  "biologa" = "3", "borracheiro" = "1", "bubina de motor (enrolar" = "2", 
+  "cabeleireira" = "2", "cabelereiro" = "2", "caixa, casa loterica, chefe de crediario" = "2", 
+  "camelo autunomo" = "2", "cargos administrativos" = "4", "carpinteiro" = "2", 
+  "carreteiro" = "2", "carteiro" = "2", "catador" = "1", "ceramica" = "2", 
+  "chefe de manutencao" = "3", "circuritario" = "3", "cobrador de onibus" = "2",
+  "coleta reciclagem (nao soube especificar funcao" = "1", "comerciante" = "2", 
+  "comerciante  lateralidade nao informado" = "2", "comerciante (autonoma" = "2", 
+  "comerciante, dona de casa" = "2", "comerciante, professor de portugues" = "4",
+  "comerciante, proprietario de restaurante" = "4", 
+  "comerciario" = "2", "comercio" = "2", "comercio exterior" = "4", 
+  "comprador" = "2", "comprador, autonomo" = "2", "conferente" = "3", 
+  "construcao civil" = "3", "construtor" = "3", "consultor tecnico" = "4",
+  "contabilidade" = "4", "contabilista" = "4", "contador" = "4", 
+  "contador e vendedor" = "4", "contadora" = "4", 
+  "contator, tec. eletrotecico" = "4", "contramestre tecelagem" = "2", 
+  "copeira" = "1",  "copeira e auxiliar de limpeza" = "1", "copeiro" = "1", 
+  "corretor de imoveis" = "3", "corretor de seguro de saude" = "3", 
+  "cortador de pedra" = "2", "costureira" = "2", 
+  "costureira, operaria de fabrica" = "2", "costureira/ domestica" = "2",
+  "cozinheira" = "1", "cozinheira de escola" = "1", "cozinheira hospitalar" = "1", 
+  "cozinheiro" = "1", "cuidadora de idoso" = "2", "cuidadora de idosos" = "2", 
+  "d lar" = "1",
+  "dentista" = "4", "dentista (nunca exerceu a profissao), vendedora de remedios" = "3", 
+  "desempregado" = NA, "desenhista" = "2", "despachante" = "3", 
+  "despachante aduaneiro" = "3", "diarista" = "1", "digitadora" = "2", 
+  "do lar" = "1", "do lar  domestica e costureira" = "2", "do lar e domestica" = "1", 
+  "do lar, nunca trabalhou formalmente" = "1", "do lar. pensao do esposo" = "1", 
+  "do lar. pensionista do marido" = "1", 
+  "do lar    situacao trabalhista: aposentou por idade, nunca trabalhou" = "1",
+  "dolar" = "1", "domestica" = "1", "domesticas" = "1", "domestico" = "1", 
+  "dona de casa" = "1", "editor grafico" = "3", 
+  "ela trabalhou em industria de linhas, nao sabem a funcao" = "2", 
+  "eletricista" = "2", "eletricista de automoveis" = "2", 
+  "eletricista e encarregado de servicos da prefeitura" = "2", 
+  "eletricista/pedreiro" = "2", "empacotador" = "1", "empregada domestica" = "1", 
+  "empregada domestica, cabeleireira, costureira" = "2", "encanador" = "1",
+  "encarregado" = "2", "encarregado de jardinagem" = "1", "enfermeira" = "4",
+  "engenheiro" = "4", "engenheiro mecanico" = "4", "engesseiro" = "2", 
+  "escritorio de contabilidade" = "2", "escrituraria" = "3", "escriturario" = "3", 
+  "escultora" = "2", "estalador de box,vidraceiro" = "2", "estoquista" = "2", 
+  "farmaceutico" = "4", "faturamento" = "3", "faxineira" = "1", "faxineiro" = "1", 
+  "faxineiro    obs lateralidade: nao escolarizado, por isso nao escrevia, assinava  apenas com digital" = "1", 
+  "faxiniera" = "1", "fazia blocos de construcao civil (olaria" = "1", 
+  "feirante" = "3", "ferramenteiro" = "2", "frentista" = "1", 
+  "func. publica , aux servicos" = "2", "funcionaria publica" = "3", 
+  "funcionaria publica do tj, escrituraria" = "3", 
+  "funcionaria publica e costureira" = "3", "funcionaria publica estadual" = "3", 
+  "funcionaria publica estadual, vendedora" = "3", 
+  "funcionaria publica, auxiliar de enfermagem" = "3", "funcionario publico" = "3", 
+  "funcionario publico" = "3", "funcionario publico escrivao" = "3", 
+  "funcionario publico municipal" = "3", "funileiro" = "1", "funileiro e pintor" = "1", 
+  "fuunileiro" = "1", "garcom" = "1", "garconete" = "1", "gari" = "1",
+  "gari, ajudante de obras" = "1", "gcm" = "2", "gerente" = "4", 
+  "gerente comercial" = "4", "gerente de hotelaria" = "4", 
+  "gerente de posto de gasolina" = "4", "gerente de producao" = "4", 
+  "gerente de vendas" = "4", "gerente empresa comercial" = "4", "grafico" = "3", 
+  "guarda" = "2", "ilustrador" = "3", "impressor off set" = "2", 
+  "industriario" = "2", "inspetor qualidade da gm  idade 80 anos" = "3", 
+  "inspetora" = "3", "instalador de telefone, ha dois anos desempregado" = "2", 
+  "instrutor de curso tecnico de mecanica" = "4", "instrutor de empilhadeira" = "4", 
+  "jardineiro" = "1", "jornaleiro" = "1", "jornalista de radio" = "3", 
+  "lancheiro" = "2", "lar" = "1", "lavadeira" = "1", "lavador" = "1", "lavoura" = "1", 
+  "lavrador" = "1", "lavradora" = "1", "lider de produto" = "4", "limpeza" = "1", 
+  "limpeza, plantacoes (sitio" = "1", "linha de producao" = "2", "logistica" = "3", 
+  "lombador" = "1", "lustrador de moveis" = "1", "maquinista" = "2", "marceneiro" = "2", 
+  "marceneiro (autonomo" = "2", "marcineiro" = "2", "marmorista autonomo" = "2", 
+  "matalurgico" = "2", "material de construcao" = "2", "mecanico" = "2", 
+  "mecanico de automoveis" = "2", "mecanico de manutencao" = "2", 
+  "medico clinico geral" = "4", "merendeira" = "2", "mestre de obras" = "3", 
+  "metalurgica" = "2", "metalurgico" = "2", "metalurgico aposentado" = "2", 
+  "metalurgico ate 38 anos , apos alcoolismo so servicos informal como bicos que apareciam" = "2", "metalurgico ferramenteiro" = "2",
+  "militar" = "2", "militar primeiro sargento" = "2", "moleiro" = "2", 
+  "monitor de transportadora" = "3", "montador" = "2", "motoqueiro" = "2", 
+  "motorista" = "2", "motorista autonomo" = "2", 
+  "motorista   ajudante no comercio" = "2", "motorista carro forte" = "2", 
+  "motorista de ambulancia, carro e onibus" = "2", "motorista de caminhao" = "2", 
+  "motorista de caminhao e empilhadeira" = "2", "motorista de caminhao e onibus" = "2", 
+  "motorista de carreta" = "2", "motorista de carro" = "2", 
+  "motorista de carro e caminhao" = "2", "motorista de onibus" = "2", 
+  "motorista de onibus  ajudante de pedreiro" = "2", 
+  "motorista parou ha 3 anos, devido a amputacao" = "2", 
+  "motorista, servidor federal" = "2", "musico" = "4", "nao informado" = NA, 
+  "nunca trabalhou" = "1", "nutricionista" = "4", "operador de caixa" = "3", 
+  "operador de empilhadeira" = "2", "operador de maquinas" = "2", 
+  "operador de prensa" = "2", "operador quimico" = "2", "operaria" = "2", 
+  "operaria de fabrica" = "2", "operaria de fabrica de charuto" = "2", 
+  "operaria, cabeleireira" = "2", "operario" = "2", "operario de fabrica" = "2", 
+  "ourives" = "2", "outro" = NA, "overloquista" = "2", "padeiro" = "1", 
+  "pizzaiolo" = "1",
+  "passadeira" = "1", "pedreiro" = "1", 
+  "pedreiro    afastado ha 7 meses por incapacidade" = "1", 
+  "pedreiro autonomo" = "1", "pedreiro, cobrador, eletricista" = "2",
+  "pedreiro e ajudante construcao civil" = "1", "pedreiro e torneiro mecanico" = "2", 
+  "peixeiro" = "1", "pescadora" = "1", "pespontadeira (fazia sapatos" = "2", 
+  "pintor" = "1", "pintor de parede" = "1", "policial militar" = "2", 
+  "portaria hc" = "2", "porteiro" = "2", "porteiro continuo" = "2", 
+  "porteiro, carcereiro" = "2", "porteiro, pedreiro" = "2", "prencista" = "2", 
+  "prensista" = "2", "prof de tenis" = "3", "prof universitaria da unesp" = "4", 
+  "professor" = "4", "professor de idiomas, artes plasticas" = "4", "professora" = "4",
+  "professora de artesanato" = "3", "professora de ingles" = "4", 
+  "professora de letras em escola, funcionaria publica municipal" = "4", 
+  "professora educacao fisica/ bancaria" = "3", "projetista desenhista" = "3", 
+  "proprietaria de padaria" = "4", "protetico" = "2", "psicologa" = "4", 
+  "quimico" = "3", "receita federal" = "3", "recepcionista" = "2", 
+  "recepcionista de metalurgica" = "2", "repositor" = "1", "repositora" = "1",
+  "representante comercial" = "3", "revisor de livros" = "3", "roca" = "1", 
+  "rural" = "1", "rural/ do lar" = "1", "sabesp tecnico laboratorio" = "3", 
+  "sapateiro" = "2", "sapateiro, pedreiro" = "2", "sapateiro, seguranca" = "2", 
+  "secretaria" = "2", "secretaria do ministerio da fazenda" = "2", 
+  "secretaria executiva" = "2", "securitaria" = "3", "seguranca" = "2", 
+  "seguranca, pedreiro" = "2", "serralheiro" = "2", 
+  "servente de pedreiro /vigilante" = "1", "servicos gerais" = "1", 
+  "servicos gerais (rural" = "1", "servidor publico municipal, ajudante geral" = "2", 
+  "servidora publica" = "3", "sub oficial da aeronautica" = "4", 
+  "supervisor metalurgico" = "3", "suporte tecnico - telemarketing" = "2", 
+  "tapeceiro" = "2", "taxista" = "2", "tecela" = "2", "tecela (10 anos" = "2", 
+  "tecelagem" = "2", "tecelao" = "2", "tecnica de enfermagem" = "3", 
+  "tecnica de laboratorio" = "3", "tecnica de montagem" = "2", 
+  "tecnica em enfermagem" = "3", "tecnico em manutencao" = "2",
+  "tecnico de seguranca do trabalho" = "3", "tecnico em eletronica" = "3", 
+  "telefonia" = "2", "telefonista" = "2", 
+  "tesouraria de empresa - foi demitido atualmente 1mes" = "4", 
+  "tesoureira" = "4", "torneiro mecanico" = "2", "trabalhador rural" = "1", 
+  "trabalhador rural  mecanico  op. camera" = "2", "trabalhadora rural" = "1", 
+  "trabalhava na roca" = "1", "trabalho informal (creche)  do lar" = "1", 
+  "trabalho rural" = "1", "vendedor" = "1", "vendedor ambulante" = "2", 
+  "vendedor autonomo" = "2", "vendedor loja" = "2", "vendedora" = "2", 
+  "vendedora autonoma" = "2", "vendedora de loja, balconista" = "2", 
+  "vendedora de roupas" = "2", "vidraceiro" = "2", "vigia" = "2", "vigilante" = "2", 
+  "vigilante, serralheiro, construcao civil" = "2", "vigilante, taxista" = "2", 
+  "zelador" = "1"
+) # Listing of all the possible answers
+
+# Criar variável ISCO-08
+Bio_SDH_6$isco08 <- NA
+
+# Função mutate
+Bio_SDH_6 <- Bio_SDH_6 %>%
+  mutate(occupation = clean_occupation(occupation),
+         isco08 = occupation_map[occupation]) %>%
+  distinct() # Keep separate columns?
+
+View(Bio_SDH_6[, c("record_id", "occupation", "isco08")])
+
+```
+
+# Data cleaning (step 3)
+
+# Excluding missing for unclassifiable occupation
+```{r}
+
+Bio_SDH_7 <- Bio_SDH_6[complete.cases(Bio_SDH_6[, c("isco08")]),]
+
+# Excluded = 7
+
+```
+
+# Factor analysis
+```{r}
+
+Bio_SDH_7 <- Bio_SDH_7 %>%
+  mutate(
+    married_yn = as.numeric(married_yn),
+    isco08 = as.numeric(isco08),
+    soc_class = as.numeric(soc_class),
+    worked_yn = as.numeric(worked_yn),
+    health_three = as.numeric(health_three))
+
+cor(Bio_SDH_7[, c("married_yn", "education_num", "isco08", 
+                  "soc_class", "worked_yn", "health_three")])
+
+# Factor model
+fac_1 <- '
+      # factor
+      gen =~ married_yn + worked_yn + education_num + isco08
+             + soc_class + health_three
+      # Correlations
+      	worked_yn	~~	soc_class
+	      worked_yn	~~	health_three
+	      married_yn ~~  health_three
+      	education_num	~~	isco08
+'
+ 
+# Computing the factor
+cfa_g1 <- cfa(fac_1, data=Bio_SDH_7, std.lv=TRUE, ordered = c(
+                                                "soc_class",
+                                                "isco08", 
+                                                "worked_yn",
+                                                "health_three",
+                                                "married_yn"), 
+             estimator="WLSMV") 
+
+summary(cfa_g1, fit.measures=TRUE, standardized=TRUE)
+
+fitMeasures(cfa_g1, c('chisq', 'df', 'pvalue', 'cfi', 'rmsea', 'srmr', 'AIC'))
+
+modindices(cfa_g1)
+
+# Saving estimated values for the factor
+idx <- lavInspect(cfa_g1, "case.idx")
+fscores1 <- lavPredict(cfa_g1)
+## loop over factors
+for (fs in colnames(fscores1)) {
+  Bio_SDH_7[idx, fs] <- fscores1[ , fs]
+}
+names(Bio_SDH_7)
+
+# Saving estimated values
+Bio_SDH_7$SDH_final6 <- Bio_SDH_7$gen
+
+# Inverting the factor's signal
+Bio_SDH_7$SDH_final6_neg1 <- as.numeric(Bio_SDH_7$SDH_final6)
+Bio_SDH_7$SDH_final6_negative <- Bio_SDH_7$SDH_final6_neg1*(-1)
+
+```
+
+# Table 1
+```{r}
+Table1 <- compareGroups(alzheimer_yn_bin ~ age + deceased_sex + race_black +
+                          married_yn + education_num + worked_yn + isco08 + 
+                          soc_class + health_three +  apoe4_yn + cdr_sb + 
+                          SDH_final6_negative,
+                        method = c(deceased_sex = 3, race_black = 3, 
+                                   married_yn = 3, worked_yn = 3, isco08 = 3, 
+                                   soc_class = 3, health_three = 3, 
+                                   apoe4_yn = 3),
+                                data = Bio_SDH_7)
+Table <- createTable(Table1,  show.all = TRUE)
+print(Table, which.table = "both")
+export2xls(Table, which.table = "both", file='Table1_APOE.xlsx')
+
+```
+
+# Comparing included and excluded
+```{r}
+Bio_SDH_7$excluded <- 0
+  
+Bio_SDH_8 <- merge(Bio_SDH, Bio_SDH_7[, c("record_id", "excluded")], 
+                   by = "record_id", all.x = TRUE)
+
+Bio_SDH_8 <- Bio_SDH_8 %>% mutate(excluded = 
+                                    ifelse(is.na(excluded), 1, excluded))
+
+Table1_S <- compareGroups(excluded ~ age + deceased_sex + race_black +
+                            married_yn + education_num + worked_yn + 
+                            soc_class + health_three + apoe4_yn + cdr_sb,
+                        method = c(deceased_sex = 3, race_black = 3, 
+                                   married_yn = 3, worked_yn = 3, 
+                                   soc_class = 3, health_three = 3, 
+                                   apoe4_yn = 3),
+                                data = Bio_SDH_8)
+Table1_IE <- createTable(Table1_S,  show.all = TRUE)
+print(Table1_IE, which.table = "both")
+export2xls(Table1_IE, which.table = "both", file='Table1_S.xlsx')
+
+```
+
+# Inferential analysis
+# APOE-e4 and AD neuropathology (y/n)
+```{r}
+# APOE and AD (symp vs assymp)
+# Unadjusted
+m1_apoe_ad <- glm(as.factor(alzheimer_yn_bin) ~ apoe4_yn, 
+                          family = binomial(link="logit"), data=Bio_SDH_7)
+summary(m1_apoe_ad)
+exp(confint(m1_apoe_ad))
+tab_model(m1_apoe_ad)
+
+# Model 1
+m2_apoe_ad <- glm(as.factor(alzheimer_yn_bin) ~ apoe4_yn 
+                          + age + deceased_sex + race_black, 
+                          family = binomial(link="logit"), data=Bio_SDH_7)
+summary(m2_apoe_ad)
+confint(m2_apoe_ad)
+tab_model(m2_apoe_ad)
+
+```
+
+# APOE-e4 and AD neuropathology (y/n) - Interaction analysis
+```{r}
+
+# Interaction with SDH continuous - Model 1
+m3_sdh_ad_nic <- glm(as.factor(alzheimer_yn_bin) ~ apoe4_yn*SDH_final6_negative
+                          + age + deceased_sex + race_black, 
+                          family = binomial(link="logit"), 
+                    data=Bio_SDH_7)
+summary(m3_sdh_ad_nic)
+tab_model(m3_sdh_ad_nic)
+
+# Interaction with SDH continuous and race - Model 1
+m3_sdh_ad_nicr <- glm(as.factor(alzheimer_yn_bin) ~ 
+                       apoe4_yn*SDH_final6_negative*race_black 
+                     + age + deceased_sex, 
+                          family = binomial(link="logit"), 
+                    data=Bio_SDH_7)
+summary(m3_sdh_ad_nicr)
+tab_model(m3_sdh_ad_nicr)
+
+```
+
+# AD pathology and CDR-SB
+```{r}
+# Unadjusted
+m1_apoe_ad <- lm(cdr_sb ~ alzheimer_yn_bin, data=Bio_SDH_7)
+summary(m1_apoe_ad)
+confint(m1_apoe_ad)
+
+# Model 1
+m2_apoe_ad <- lm(cdr_sb ~ alzheimer_yn_bin 
+                          + age + deceased_sex + race_black, data=Bio_SDH_7)
+summary(m2_apoe_ad)
+confint(m2_apoe_ad)
+
+```
+
+# AD pathology and CDR-SB - Interaction analysis
+```{r}
+
+# Interaction with SDH continuous - Model 1
+m3_sdh_ad_nic <- lm(cdr_sb ~ alzheimer_yn_bin*SDH_final6_negative
+                          + age + deceased_sex + race_black, data=Bio_SDH_7)
+summary(m3_sdh_ad_nic)
+confint(m3_sdh_ad_nic)
+
+# Interaction with SDH continuous - Model 1
+m3_sdh_ad_nicr <- lm(cdr_sb ~ alzheimer_yn_bin*SDH_final6_negative*race_black
+                          + age + deceased_sex, data=Bio_SDH_7)
+summary(m3_sdh_ad_nicr)
+confint(m3_sdh_ad_nicr)
+
+```
+
+# Stratified analysis - SDH tertiles
+```{r}
+# Tertiles SDH
+Bio_SDH_7$SDH_tercis_f6 <- cut2(Bio_SDH_7$SDH_final6_negative, g = 3)
+table(Bio_SDH_7$SDH_tercis_f6)
+View(Bio_SDH_7[, c("record_id", "SDH_tercis_f6", "SDH_final6_negative")])
+
+Bio_SDH_7 <- Bio_SDH_7 %>% 
+  mutate(tertiles = ntile(SDH_final6_negative, 3))
+
+# Tertiles numeric
+Bio_SDH_7 <- Bio_SDH_7 %>% mutate(SDH_tercis_f6_n = 
+                              ifelse(SDH_tercis_f6 == "[-2.576,-0.304)", 1,
+                              ifelse(SDH_tercis_f6 == "[-0.304, 0.391)", 2, 3)))
+View(Bio_SDH_7[, c("record_id", "SDH_tercis_f6", "SDH_tercis_f6_n")])
+Bio_SDH_7$SDH_tercis_f6_n <- as.numeric(Bio_SDH_7$SDH_tercis_f6_n)
+
+# Creating subsets - SDH Quartile 1 
+Bio_SDH_7_sdh_T61 <- subset(Bio_SDH_7, SDH_tercis_f6_n == 1)
+
+# Unadjusted
+m1_apoe_T1 <- lm(cdr_sb ~ alzheimer_yn_bin, data=Bio_SDH_7_sdh_T61)
+summary(m1_apoe_T1)
+confint(m1_apoe_T1)
+
+# Model 1
+m2_apoe_T1 <- lm(cdr_sb ~ alzheimer_yn_bin 
+                          + age + deceased_sex + race_black,
+                  data=Bio_SDH_7_sdh_T61)
+summary(m2_apoe_T1)
+confint(m2_apoe_T1)
+
+# Creating subsets - SDH Quartile 2
+Bio_SDH_7_sdh_T62 <- subset(Bio_SDH_7, SDH_tercis_f6_n == 2)
+
+# Unadjusted
+m1_apoe_T2 <- lm(cdr_sb ~ alzheimer_yn_bin, data=Bio_SDH_7_sdh_T62)
+summary(m1_apoe_T2)
+confint(m1_apoe_T2)
+
+# Model 1
+m2_apoe_T2 <- lm(cdr_sb ~ alzheimer_yn_bin
+                          + age + deceased_sex + race_black,
+                  data=Bio_SDH_7_sdh_T62)
+summary(m2_apoe_T2)
+confint(m2_apoe_T2)
+
+# Creating subsets - SDH Quartile 3
+Bio_SDH_7_sdh_T63 <- subset(Bio_SDH_7, SDH_tercis_f6_n == 3)
+
+# Unadjusted
+m1_apoe_T3 <- lm(cdr_sb ~ alzheimer_yn_bin, data=Bio_SDH_7_sdh_T63)
+summary(m1_apoe_T3)
+confint(m1_apoe_T3)
+
+# Model 1
+m2_apoe_T3 <- lm(cdr_sb ~ alzheimer_yn_bin
+                          + age + deceased_sex + race_black,
+                  data=Bio_SDH_7_sdh_T63)
+summary(m2_apoe_T3)
+confint(m2_apoe_T3)
+
+```
+
+# Ploting models - Stratified analysis - SDH tertiles
+```{r}
+# APOE and AD (symp vs assymp)
+# SDH Tertile 1
+# Unadjusted
+m1_1 <- lm(cdr_sb ~ alzheimer_yn_bin, data=Bio_SDH_7_sdh_T61)
+summary(m1_1)
+hist(m1_1$residuals)
+betas_m1_1 <- coef(m1_1)
+confint_m1_1 <- confint(m1_1)
+
+# Model 1
+m1_2 <- lm(cdr_sb ~ alzheimer_yn_bin 
+                 + age + deceased_sex + race_black,
+                 data=Bio_SDH_7_sdh_T61)
+summary(m1_2)
+hist(m1_2$residuals)
+betas_m1_2 <- coef(m1_2)
+confint_m1_2 <- confint(m1_2)
+
+# SDH Tertile 2
+# Unadjusted
+m2_1 <- lm(cdr_sb ~ alzheimer_yn_bin, data=Bio_SDH_7_sdh_T62)
+summary(m2_1)
+hist(m2_1$residuals)
+betas_m2_1 <- coef(m2_1)
+confint_m2_1 <- confint(m2_1)
+
+# Model 1
+m2_2 <- lm(cdr_sb ~ alzheimer_yn_bin
+                 + age + deceased_sex + race_black,
+                 data=Bio_SDH_7_sdh_T62)
+summary(m2_2)
+hist(m2_2$residuals)
+betas_m2_2 <- coef(m2_2)
+confint_m2_2 <- confint(m2_2)
+
+# SDH Tertile 3
+# Unadjusted
+m3_1 <- lm(cdr_sb ~ alzheimer_yn_bin, data=Bio_SDH_7_sdh_T63)
+summary(m3_1)
+hist(m3_1$residuals)
+betas_m3_1 <- coef(m3_1)
+confint_m3_1 <- confint(m3_1)
+
+# Model 1
+m3_2 <- lm(cdr_sb ~ alzheimer_yn_bin
+                 + age + deceased_sex + race_black,
+                 data=Bio_SDH_7_sdh_T63)
+summary(m3_2)
+hist(m3_2$residuals)
+betas_m3_2 <- coef(m3_2)
+confint_m3_2 <- confint(m3_2)
+
+# Creating a function to extract betas and confidence intervals ####
+extrair_dados <- function(betas, confint, modelo_nome, desfecho) {
+  data.frame(
+    Coeficiente = names(betas),
+    Beta = betas,
+    Lower_CI = confint[, 1],
+    Upper_CI = confint[, 2],
+    Modelo = modelo_nome,
+    Desfecho = desfecho
+  ) %>%
+    # Filter to keep only coefficients from categories of class_cat
+    filter(!Coeficiente %in% c("(Intercept)", "age", "deceased_sex1", "race_black2"))
+}
+
+# Extracting data from unadjusted models
+resultados_m1 <- extrair_dados(betas_m1_1, confint_m1_1, "Não Ajustado", "cdr_sb_t1")
+print(resultados_m1)
+
+# Extracting data from models adjusted for demographics
+resultados_m1_2 <- extrair_dados(betas_m1_2, confint_m1_2, "Ajustado", "cdr_sb_t1")
+print(resultados_m1_2)
+
+# Extracting data from unadjusted models
+resultados_m2 <- extrair_dados(betas_m2_1, confint_m2_1, "Não Ajustado", "cdr_sb_t2")
+print(resultados_m2)
+
+# Extracting data from models adjusted for demographics
+resultados_m2_2 <- extrair_dados(betas_m2_2, confint_m2_2, "Ajustado", "cdr_sb_t2")
+print(resultados_m2_2)
+
+# Extracting data from unadjusted models
+resultados_m3 <- extrair_dados(betas_m3_1, confint_m3_1, "Não Ajustado", "cdr_sb_t3")
+print(resultados_m3)
+
+# Extracting data from models adjusted for demographics
+resultados_m3_2 <- extrair_dados(betas_m3_2, confint_m3_2, "Ajustado", "cdr_sb_t3")
+print(resultados_m3_2)
+
+# Combining all results into a single data frame
+resultados_completos <- rbind(
+  resultados_m1, resultados_m1_2,
+  resultados_m2, resultados_m2_2,
+  resultados_m3, resultados_m3_2
+)
+print(resultados_completos)# Viewing the combined results
+
+
+# Graph - All outcomes
+# Unadjusted
+Unadjusted_all <- 
+  ggplot(resultados_completos[resultados_completos$Modelo == "Não Ajustado", ], aes(x = Coeficiente, y = Beta, color = Desfecho)) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "black") +  # X axis doted line = 0
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0.2, position = position_dodge(width = 0.5)) +  # Adds whiskers
+  geom_pointrange(aes(ymin = Lower_CI, ymax = Upper_CI), position = position_dodge(width = 0.5)) +  # Adds dots and ranges
+  scale_x_discrete(labels = c("")) +  # Renames x axis categories
+  scale_y_continuous(limits = c(5.0, 11.0), breaks = scales::pretty_breaks(n = 7)) + # limits to y-axis
+  scale_color_manual(values = c("cdr_sb_t1" = "grey71", "cdr_sb_t2" = "grey50", "cdr_sb_t3" = "black"),
+                     labels = c("Favorable SDoH profile", 
+                                "Intermediate SDoH profile", 
+                                "Unfavorable SDoH profile")) +  # Changes colors and outcome labels
+  labs(title = "",
+       x = "AD pathology",   # Keeps y axis title
+       y = "Unadjusted beta and 95% CI",  # Keeps y axis title
+       color = NULL  # Removes legend title
+  ) +
+  theme_classic()
+
+Unadjusted_all 
+
+# Graphs - Tertile 1
+# Adjusted
+Adjusted_all <- 
+  ggplot(resultados_completos[resultados_completos$Modelo == "Ajustado", ], aes(x = Coeficiente, y = Beta, color = Desfecho)) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "black") +  # X axis doted line = 0
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0.2, position = position_dodge(width = 0.5)) +  # Adds whiskers
+  geom_pointrange(aes(ymin = Lower_CI, ymax = Upper_CI), position = position_dodge(width = 0.5)) +  # Adds dots and ranges
+  scale_x_discrete(labels = c("")) +  # Renames x axis categories
+  scale_y_continuous(limits = c(5.0, 11.0), breaks = scales::pretty_breaks(n = 7)) + # limits to y-axis
+  scale_color_manual(values = c("cdr_sb_t1" = "grey71", "cdr_sb_t2" = "grey50", "cdr_sb_t3" = "black"),
+                     labels = c("Favorable SDoH profile", 
+                                "Intermediate SDoH profile", 
+                                "Unfavorable SDoH profile")) + # Changes colors and outcome labels
+  labs(title = "",
+       x = "AD pathology",  # Keeps y axis title
+       y = "Adjusted beta and 95% CI", # Keeps y axis title
+       color = NULL  # Removes legend title
+  ) +
+  theme_classic()
+
+Adjusted_all 
+
+# Combining graphs into a single figure
+CombinedSDoH_final6 <- ggarrange(Unadjusted_all, Adjusted_all,
+                         labels = c("A", "B"),
+                         ncol = 2, nrow = 1,
+                         common.legend = TRUE, legend = "bottom")# Edit legend
+CombinedSDoH_final6
+
+ggexport(CombinedSDoH_final6, 
+         filename = "CombinedSDoH_final6.pdf")
+
+```
+
+# Stratified analysis - SDH tertiles and race - APOE-e4 and AD pathology
+```{r}
+# Usei esse tutorial: https://stackoverflow.com/questions/1169539/linear-regression-and-group-by-in-r
+# Break up d by state, then fit the specified model to each piece and
+# return a list
+
+# Tertile 1
+# Number by race
+table(Bio_SDH_7_sdh_T61$race_black)
+
+# Model 1
+tertile1_race <- dlply(Bio_SDH_7_sdh_T61, "race_black", function(df) 
+  glm(as.factor(alzheimer_yn_bin) ~ apoe4_yn + age + deceased_sex, 
+                          family = binomial(link="logit"), data = df))
+
+# Apply coef to each model and return a data frame
+ldply(tertile1_race, coef)
+
+# Print the summary of each model
+l_ply(tertile1_race, summary, .print = TRUE)
+l_ply(tertile1_race, confint, .print = TRUE)
+
+# Tertile 2
+# Number by race
+table(Bio_SDH_7_sdh_T62$race_black)
+
+# Model 1
+tertile2_race <- dlply(Bio_SDH_7_sdh_T62, "race_black", function(df) 
+  glm(as.factor(alzheimer_yn_bin) ~ apoe4_yn + age + deceased_sex, 
+                          family = binomial(link="logit"), data = df))
+
+# Apply coef to each model and return a data frame
+ldply(tertile2_race, coef)
+
+# Print the summary of each model
+l_ply(tertile2_race, summary, .print = TRUE)
+l_ply(tertile2_race, confint, .print = TRUE)
+
+# Tertile 3
+# Number by race
+table(Bio_SDH_7_sdh_T63$race_black)
+
+# Model 1
+tertile3_race <- dlply(Bio_SDH_7_sdh_T63, "race_black", function(df) 
+  glm(as.factor(alzheimer_yn_bin) ~ apoe4_yn + age + deceased_sex, 
+                          family = binomial(link="logit"), data = df))
+
+# Apply coef to each model and return a data frame
+ldply(tertile3_race, coef)
+
+# Print the summary of each model
+l_ply(tertile3_race, summary, .print = TRUE)
+l_ply(tertile3_race, confint, .print = TRUE)
+
+```
+
+# Stratified analysis - SDH tertiles and race - AD pathology and CDR-SB
+```{r}
+# Usei esse tutorial: https://stackoverflow.com/questions/1169539/linear-regression-and-group-by-in-r
+# Break up d by state, then fit the specified model to each piece and
+# return a list
+
+# Tertile 1
+# Number by race
+table(Bio_SDH_7_sdh_T61$race_black)
+
+# Model 1
+tertile1_race <- dlply(Bio_SDH_7_sdh_T61, "race_black", function(df) 
+  lm(cdr_sb ~ alzheimer_yn_bin + age + deceased_sex, data = df))
+
+# Apply coef to each model and return a data frame
+ldply(tertile1_race, coef)
+
+# Print the summary of each model
+l_ply(tertile1_race, summary, .print = TRUE)
+l_ply(tertile1_race, confint, .print = TRUE)
+
+# Tertile 2
+# Number by race
+table(Bio_SDH_7_sdh_T62$race_black)
+
+# Model 1
+tertile2_race <- dlply(Bio_SDH_7_sdh_T62, "race_black", function(df) 
+  lm(cdr_sb ~ alzheimer_yn_bin + age + deceased_sex, data = df))
+
+# Apply coef to each model and return a data frame
+ldply(tertile2_race, coef)
+
+# Print the summary of each model
+l_ply(tertile2_race, summary, .print = TRUE)
+l_ply(tertile2_race, confint, .print = TRUE)
+
+# Tertile 3
+# Number by race
+table(Bio_SDH_7_sdh_T63$race_black)
+
+# Model 1
+tertile3_race <- dlply(Bio_SDH_7_sdh_T63, "race_black", function(df) 
+  lm(cdr_sb ~ alzheimer_yn_bin + age + deceased_sex, data = df))
+
+# Apply coef to each model and return a data frame
+ldply(tertile3_race, coef)
+
+# Print the summary of each model
+l_ply(tertile3_race, summary, .print = TRUE)
+l_ply(tertile3_race, confint, .print = TRUE)
+
+```
+
